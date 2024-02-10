@@ -8,6 +8,11 @@ class Router:
     sockets = {}
     ports = {}
 
+    # Keep track of all recieved route announcements
+    route_announcments = []
+    # Keep track of all routes in our forwarding table
+    forwarding_table = []
+
     def __init__(self, asn, connections):
         print("Router at AS %s starting up" % asn)
         self.asn = asn
@@ -39,8 +44,50 @@ class Router:
                         srcif = sock
                         break
                 msg = k.decode('utf-8')
-
-                print("Received message '%s' from %s" % (msg, srcif))
+                # print("Received message '%s' from %s" % (msg, srcif))
+                self.process_msg(msg)          
+        return
+    
+    def process_msg(self, msg):
+        msg_json = json.loads(msg)
+        msg_src = msg_json['src']
+        msg_dst = msg_json['dst']
+        msg_type = msg_json['type']
+        msg_msg = msg_json['msg']
+        # msg_msg_json = json.loads(msg_msg)
+        print("source: " + msg_src + ", destination: " + msg_dst + ", type: " + msg_type)
+        
+        # main logic
+        if (msg_type == "update"):
+            # save a copy of this route announcement for later
+            self.route_announcments.append(msg)
+            # update our forwarding table
+            self.forwarding_table.append(msg_msg)
+            # send copies to neighbors (if applicable)
+            rec_neighbor_type = self.relations[msg_src]
+            for sock_ip in self.sockets:
+                # Don't send the update back the way it came
+                if(sock_ip != msg_src):
+                    # Decide if we're sending a copy to a given neighbor based on peer/cust/prov relationship
+                    if (rec_neighbor_type == "cust") or (((rec_neighbor_type == "prov") or (rec_neighbor_type == "peer")) and (self.relations[sock_ip] == "cust")):
+                        # Remove private fields from our message
+                        new_msg = {
+                            "src" : self.our_addr(sock_ip),
+                            "dst" : sock_ip,
+                            "type" : msg_type,
+                            "msg" :
+                            {
+                                "network" : msg_msg['network'],
+                                "netmask" : msg_msg['netmask'],
+                                "ASPath" : [self.asn] + msg_msg['ASPath']
+                            }
+                        }
+                        # Send it over our neighbor
+                        self.send(sock_ip, json.dumps(new_msg))
+        elif(msg_type == "data"):
+            print("Trying to send data")
+        elif(msg_type == "dump"):
+            print("Trying to send data")
         return
 
 if __name__ == "__main__":
