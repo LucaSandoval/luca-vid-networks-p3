@@ -45,7 +45,12 @@ class Router:
                         break
                 msg = k.decode('utf-8')
                 # print("Received message '%s' from %s" % (msg, srcif))
-                self.process_msg(msg)          
+                msgJson = json.loads(msg)
+                if msgJson["type"] == "dump":
+                    self.send(srcif,self.send_table(msgJson["src"]))
+                else:
+                    self.process_msg(msg)
+                # self.process_msg(msg)          
         return
     
     def process_msg(self, msg):
@@ -62,6 +67,7 @@ class Router:
             # save a copy of this route announcement for later
             self.route_announcments.append(msg)
             # update our forwarding table
+            msg_msg["peer"] = msg_src
             self.forwarding_table.append(msg_msg)
             # send copies to neighbors (if applicable)
             rec_neighbor_type = self.relations[msg_src]
@@ -85,10 +91,43 @@ class Router:
                         # Send it over our neighbor
                         self.send(sock_ip, json.dumps(new_msg))
         elif(msg_type == "data"):
-            print("Trying to send data")
+            # Determine if packet is legal
+            
+            # Determine which route to forward it to (if any)
+            for route in self.forwarding_table:
+                route_network = route['network']
+                route_netmask = route['netmask']
+                if self.ip_in_network(msg_dst, route_network, route_netmask):
+                    # print("trying to send to: " + route['src'])
+                    self.send(route['peer'], msg)
+                    return
         elif(msg_type == "dump"):
             print("Trying to send data")
         return
+    
+    def ip_in_network(self, ip, network, netmask):
+        # Split the IP address, network address, and netmask into octets
+        ip_octets = [int(octet) for octet in ip.split('.')]
+        network_octets = [int(octet) for octet in network.split('.')]
+        netmask_octets = [int(octet) for octet in netmask.split('.')]
+        
+        # Convert octets to binary
+        ip_binary = int(''.join(format(octet, '08b') for octet in ip_octets), 2)
+        network_binary = int(''.join(format(octet, '08b') for octet in network_octets), 2)
+        netmask_binary = int(''.join(format(octet, '08b') for octet in netmask_octets), 2)
+
+        # Compare if the result matches the network address
+        return (network_binary & netmask_binary) == (ip_binary & netmask_binary)
+    
+    def send_table(self, dst):
+        response = {
+            "src":  self.our_addr(dst),        # Example: 72.65.0.1, i.e., your router
+            "dst":  dst,   # Example: 72.65.0.2, i.e., the neighboring router
+            "type": "table",
+            "msg": self.forwarding_table
+            }
+        return json.dumps(response)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='route packets')
