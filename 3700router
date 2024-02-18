@@ -44,13 +44,8 @@ class Router:
                         srcif = sock
                         break
                 msg = k.decode('utf-8')
-                # print("Received message '%s' from %s" % (msg, srcif))
-                msgJson = json.loads(msg)
-                if msgJson["type"] == "dump":
-                    self.send(srcif,self.send_table(msgJson["src"]))
-                else:
-                    self.process_msg(msg)
-                # self.process_msg(msg)          
+                
+                self.process_msg(msg)          
         return
     
     def process_msg(self, msg):
@@ -102,7 +97,8 @@ class Router:
                     self.send(route['peer'], msg)
                     return
         elif(msg_type == "dump"):
-            print("Trying to send data")
+            # Sends table message back the way it came.
+            self.send(msg_src, self.send_table(msg_src))
         return
     
     def ip_in_network(self, ip, network, netmask):
