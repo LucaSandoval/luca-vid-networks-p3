@@ -47,25 +47,22 @@ class Router:
                         break
                 msg = k.decode('utf-8')
 
-                self.process_msg(msg)          
+                self.process_msg(msg, srcif)          
         return
     
-    def process_msg(self, msg):
+    def process_msg(self, msg, src):
         msg_json = json.loads(msg)
         msg_src = msg_json['src']
         msg_dst = msg_json['dst']
         msg_type = msg_json['type']
         msg_msg = msg_json['msg']
-        # msg_msg_json = json.loads(msg_msg)
-        # print("source: " + msg_src + ", destination: " + msg_dst + ", type: " + msg_type)
         
         # main logic
         if (msg_type == "update"):
             # save a copy of this route announcement for later
             self.route_announcments.append(msg)
             # update our forwarding table
-            msg_msg["peer"] = msg_src
-            self.forwarding_table.append(msg_msg)
+            self.rebuild_forwarding_table()
             # send copies to neighbors (if applicable)
             rec_neighbor_type = self.relations[msg_src]
             for sock_ip in self.sockets:
@@ -98,34 +95,31 @@ class Router:
                     possible_routes.append(route)
             # If we've found any matches, determine the best one and send it.
             if (len(possible_routes) > 0):
+                is_legal = True
                 chosen_route = self.pick_best_route(possible_routes)
-                self.send(chosen_route['peer'], msg)
-                return
-            # Determine if packet is legal
-
-            # Otherwise, there is no route
-            no_route_msg = {
-                "src" : self.our_addr(msg_src),
-                "dst" : msg_src,
-                "type" : "no route",
-                "msg" : {}
-            }
-            self.send(msg_src, no_route_msg)
+                # Determine if forwarding is legal
+                if ((self.relations[src] == "peer" or self.relations[src] == "prov") and (self.relations[chosen_route['peer']] == "peer" or self.relations[chosen_route['peer']] == "prov")):
+                    is_legal = False
+                if (is_legal):
+                    self.send(chosen_route['peer'], msg)
+                else:
+                    self.send_no_route(msg_src, src)
+            else:
+                # Otherwise, there is no route
+                self.send_no_route(msg_src, src)
         elif(msg_type == "dump"):
             # Sends table message back the way it came.
             self.send(msg_src, self.send_table(msg_src))
         if msg_type == "withdraw":
             # for each ip address in forwarding table 
-            new_forwarding_table = []
-            for entry in self.forwarding_table:
+            for entry in self.route_announcments:
+                entry_json = json.loads(entry)
                 for network in msg_msg:
-                    if msg_src != entry["peer"] or network["network"] != entry["network"] or network["netmask"] != entry["netmask"]:
-                        new_forwarding_table.append(entry)
-                    else:
-                        print(f"removed : {entry}")
+                    if msg_src == entry_json["src"] and network["network"] == entry_json["msg"]["network"] and network["netmask"] == entry_json["msg"]["netmask"]:
+                        self.route_announcments.remove(entry)
                         
             # new forwarding table with the updated entries
-            self.forwarding_table = new_forwarding_table
+            self.rebuild_forwarding_table()
             
             # send copies of the route revocation to neighbors
             
@@ -153,7 +147,31 @@ class Router:
             return route_possibilites[0]
 
         search_pool = route_possibilites
-
+        
+        #list to hold the routes tied for the longest prefix
+        bestRoutesSoFar = []
+        
+        for route in search_pool:
+            # get the length of the netmask 
+            routePrefixLength = self.netmaskLength(route["netmask"])
+            
+            # if this is the first route in the list set as default best
+            if len(bestRoutesSoFar) == 0:
+                bestRoutesSoFar.append(route)
+            # if we find an equal prefix length add to list
+            elif self.netmaskLength(bestRoutesSoFar[0]["netmask"]) == routePrefixLength:
+                bestRoutesSoFar.append(route)
+                #if we find a higher prefix then empty the list and set new route as only element
+            elif self.netmaskLength(bestRoutesSoFar[0]["netmask"]) < routePrefixLength:
+                bestRoutesSoFar = [route]
+                
+        search_pool = bestRoutesSoFar
+        #if we end up with one highest prefix match then we are done
+        if len(search_pool) == 1:
+            return search_pool[0]
+        
+        #if multiple matches 
+        
         # Step 1: Try to find the highest local pref.
         route_dict, ranking = self.sort_routes_by_field('localpref', search_pool)
         # If there is one clear highest, pick it
@@ -211,6 +229,13 @@ class Router:
         # Sort ranking by key values
         ranking = sorted(ranking)
         return route_dict, ranking
+
+    def netmaskLength(self, netmask):
+        netmask_octets = [int(octet) for octet in netmask.split('.')]
+        netmask_binary = ''.join(format(octet, '08b') for octet in netmask_octets)
+        netmask_len = netmask_binary.count('1')
+        
+        return netmask_len
     
     def find_lowest_ip(self, ip_addresses):
         # Function to compare two IP addresses and return the lowest one
@@ -257,7 +282,28 @@ class Router:
             "msg": self.forwarding_table
             }
         return json.dumps(response)
+    
+    def send_no_route(self, dst_ip, router):
+        no_route_msg = {
+                "src" : self.our_addr(router),
+                "dst" : dst_ip,
+                "type" : "no route",
+                "msg" : {}
+            }
+        self.send(router, json.dumps(no_route_msg))
+        return
 
+    def rebuild_forwarding_table(self):
+        # Clear the old forwarding table
+        self.forwarding_table = []
+        # Rebuild it from our list
+        for entry in self.route_announcments:
+            entry_json = json.loads(entry)
+            msg_msg = entry_json['msg']
+            msg_msg['peer'] = entry_json['src']
+            self.forwarding_table.append(msg_msg)
+        # Perform aggregration
+        return
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='route packets')
