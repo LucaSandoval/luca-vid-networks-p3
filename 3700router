@@ -12,6 +12,8 @@ class Router:
     route_announcments = []
     # Keep track of all routes in our forwarding table
     forwarding_table = []
+    # Keep track of all recieved route withdraw messages
+    route_withdraws = []
 
     def __init__(self, asn, connections):
         print("Router at AS %s starting up" % asn)
@@ -85,9 +87,7 @@ class Router:
                         }
                         # Send it over our neighbor
                         self.send(sock_ip, json.dumps(new_msg))
-        elif(msg_type == "data"):
-            # Determine if packet is legal
-            
+        elif(msg_type == "data"):            
             # Determine which route to forward it to (if any)
             possible_routes = []
             for route in self.forwarding_table:
@@ -101,6 +101,8 @@ class Router:
                 chosen_route = self.pick_best_route(possible_routes)
                 self.send(chosen_route['peer'], msg)
                 return
+            # Determine if packet is legal
+
             # Otherwise, there is no route
             no_route_msg = {
                 "src" : self.our_addr(msg_src),
@@ -112,6 +114,37 @@ class Router:
         elif(msg_type == "dump"):
             # Sends table message back the way it came.
             self.send(msg_src, self.send_table(msg_src))
+        if msg_type == "withdraw":
+            # for each ip address in forwarding table 
+            new_forwarding_table = []
+            for entry in self.forwarding_table:
+                for network in msg_msg:
+                    if msg_src != entry["peer"] or network["network"] != entry["network"] or network["netmask"] != entry["netmask"]:
+                        new_forwarding_table.append(entry)
+                    else:
+                        print(f"removed : {entry}")
+                        
+            # new forwarding table with the updated entries
+            self.forwarding_table = new_forwarding_table
+            
+            # send copies of the route revocation to neighbors
+            
+            rec_neighbor_type = self.relations[msg_src]
+            for sock_ip in self.sockets:
+                # Don't send the update back the way it came
+                if(sock_ip != msg_src):
+                    # Decide if we're sending a copy to a given neighbor based on peer/cust/prov relationship
+                    if (rec_neighbor_type == "cust") or (((rec_neighbor_type == "prov") or (rec_neighbor_type == "peer")) and (self.relations[sock_ip] == "cust")):
+                        # Remove private fields from our message
+                        new_msg = {
+                            "src" : self.our_addr(sock_ip),
+                            "dst" : sock_ip,
+                            "type" : msg_type,
+                            "msg" : msg_msg
+                            
+                        }
+                        # Send it over our neighbor
+                        self.send(sock_ip, json.dumps(new_msg))            
         return
     
     def pick_best_route(self, route_possibilites):
