@@ -44,7 +44,7 @@ class Router:
                         srcif = sock
                         break
                 msg = k.decode('utf-8')
-                
+
                 self.process_msg(msg)          
         return
     
@@ -55,7 +55,7 @@ class Router:
         msg_type = msg_json['type']
         msg_msg = msg_json['msg']
         # msg_msg_json = json.loads(msg_msg)
-        print("source: " + msg_src + ", destination: " + msg_dst + ", type: " + msg_type)
+        # print("source: " + msg_src + ", destination: " + msg_dst + ", type: " + msg_type)
         
         # main logic
         if (msg_type == "update"):
@@ -89,17 +89,118 @@ class Router:
             # Determine if packet is legal
             
             # Determine which route to forward it to (if any)
+            possible_routes = []
             for route in self.forwarding_table:
                 route_network = route['network']
                 route_netmask = route['netmask']
                 if self.ip_in_network(msg_dst, route_network, route_netmask):
-                    # print("trying to send to: " + route['src'])
-                    self.send(route['peer'], msg)
-                    return
+                    # This route matches, so its a possibility
+                    possible_routes.append(route)
+            # If we've found any matches, determine the best one and send it.
+            if (len(possible_routes) > 0):
+                chosen_route = self.pick_best_route(possible_routes)
+                self.send(chosen_route['peer'], msg)
+                return
+            # Otherwise, there is no route
+            no_route_msg = {
+                "src" : self.our_addr(msg_src),
+                "dst" : msg_src,
+                "type" : "no route",
+                "msg" : {}
+            }
+            self.send(msg_src, no_route_msg)
         elif(msg_type == "dump"):
             # Sends table message back the way it came.
             self.send(msg_src, self.send_table(msg_src))
         return
+    
+    def pick_best_route(self, route_possibilites):
+        # If there's only one option, pick it.
+        if (len(route_possibilites) == 1):
+            return route_possibilites[0]
+
+        search_pool = route_possibilites
+
+        # Step 1: Try to find the highest local pref.
+        route_dict, ranking = self.sort_routes_by_field('localpref', search_pool)
+        # If there is one clear highest, pick it
+        if (len(route_dict[ranking[len(ranking) - 1]]) == 1):
+            return route_dict[ranking[len(ranking) - 1]][0]
+        search_pool = route_dict[ranking[len(ranking) - 1]]
+        
+        # Step 2: Try to find a single entry with selfOrigin set to true.
+        route_dict, ranking = self.sort_routes_by_field('selfOrigin', search_pool)
+        # If there is one True, pick it
+        if (True in route_dict):
+            if (len(route_dict[True]) == 1):
+                return route_dict[True][0]
+            else:
+                search_pool = route_dict[True]
+
+        # Step 3: Try to find shortest AS path.
+        route_dict, ranking = self.sort_routes_by_field('ASPath', search_pool)
+        # Extra step, sort my ranking by array length.
+        if(len(route_dict[ranking[0]]) == 1):
+            return route_dict[ranking[0]][0]
+        search_pool = route_dict[ranking[0]]
+
+        # Step 4: Try to find the best origin. 
+        route_dict, ranking = self.sort_routes_by_field('origin', search_pool)
+        # Following IGP > EGP > UNK, we need to do some filtering.
+        if ("IGP" in route_dict):
+            if(len(route_dict["IGP"]) == 1):
+                return route_dict["IGP"][0]
+        elif ("EGP" in route_dict):
+            if(len(route_dict["EGP"]) == 1):
+                return route_dict["EGP"][0]
+        elif ("UNK" in route_dict):
+            search_pool = route_dict["UNK"]
+
+        # Step 5: Routes are the same in every other way, therefore we simply pick the lowest ip adress.
+        route_dict, ranking = self.sort_routes_by_field('peer', search_pool)
+        lowest_ip = self.find_lowest_ip(ranking)
+        return route_dict[lowest_ip][0]
+    
+    def sort_routes_by_field(self, field, route_possibilites):
+        # Place all routes into a table where the key is the 
+        # given field.
+        route_dict = {}
+        ranking = []
+        for route in route_possibilites:
+            key = route[field]
+            if (isinstance(key, list)):
+                key = len(key)
+            if key in route_dict:
+                route_dict[key].append(route)
+            else:
+                route_dict[key] = [route]
+                ranking.append(key)
+        # Sort ranking by key values
+        ranking = sorted(ranking)
+        return route_dict, ranking
+    
+    def find_lowest_ip(self, ip_addresses):
+        # Function to compare two IP addresses and return the lowest one
+        def compare_ip_addresses(ip1, ip2):
+            octets1 = list(map(int, ip1.split('.')))
+            octets2 = list(map(int, ip2.split('.')))
+            
+            for octet1, octet2 in zip(octets1, octets2):
+                if octet1 < octet2:
+                    return ip1
+                elif octet1 > octet2:
+                    return ip2
+            
+                return ip1 if ip1 < ip2 else ip2
+
+        # Initialize with the first IP address
+        lowest_ip = ip_addresses[0]
+
+        # Compare with the rest of the IP addresses
+        for ip_address in ip_addresses[1:]:
+            lowest_ip = compare_ip_addresses(lowest_ip, ip_address)
+        
+        return lowest_ip
     
     def ip_in_network(self, ip, network, netmask):
         # Split the IP address, network address, and netmask into octets
