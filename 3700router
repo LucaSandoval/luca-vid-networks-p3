@@ -84,6 +84,7 @@ class Router:
                         }
                         # Send it over our neighbor
                         self.send(sock_ip, json.dumps(new_msg))
+                        
         elif(msg_type == "data"):            
             # Determine which route to forward it to (if any)
             possible_routes = []
@@ -260,6 +261,95 @@ class Router:
         
         return lowest_ip
     
+    def canAggregate(self, route1, route2):
+        #print(f"Can aggregate {route1}, {route2}?")
+        #adjacent numerically,
+        net1 = route1["network"]
+        net1_octets = [int(octet) for octet in net1.split('.')]
+        net1_binary = int(''.join(format(octet, '08b') for octet in net1_octets), 2)
+        
+        netmask1 = route1["netmask"]
+        netmask1_octets = [int(octet) for octet in netmask1.split('.')]
+        netmask1_binary = int(''.join(format(octet, '08b') for octet in netmask1_octets), 2)
+        
+        net2 = route2["network"]
+        net2_octets = [int(octet) for octet in net2.split('.')]
+        net2_binary = int(''.join(format(octet, '08b') for octet in net2_octets), 2)
+        
+        netmask2 = route2["netmask"]
+        netmask2_octets = [int(octet) for octet in netmask2.split('.')]
+        netmask2_binary = int(''.join(format(octet, '08b') for octet in netmask2_octets), 2)
+        
+        if netmask1_binary != netmask2_binary:
+            #print("netmask not equal")
+            return False
+        
+        adjecent = abs(net1_binary & netmask1_binary - net2_binary & netmask2_binary) == 0
+        #print(f"adjecent: {adjecent}")
+        if adjecent: 
+        # forward to the same next-hop router 
+            if route1["ASPath"][0] == route2["ASPath"][0]:
+        # have the same attributes (e.g., localpref, origin, etc.)
+                    return route1["origin"] == route2["origin"] \
+                        and route1["localpref"] == route2["localpref"] \
+                            and route1["peer"] == route2["peer"]
+                            
+        return False
+    
+    def aggregate_routes(self, routes):
+        if(len(routes) == 1):
+            return routes[0]
+
+        # Start by extracting all route network bianaries
+        route_network_bianaries = []
+        for route in routes:
+            network = route['network']
+            bianary = ''.join([bin(int(x)+256)[3:] for x in network.split('.')])
+            bianary = str(bianary)
+            route_network_bianaries.append(bianary)
+
+        # Determine new network ip & netmask ip
+        network_result = ''
+        netmask_result = ''
+        end_of_netmask = False
+        for x in range(32):
+            all_the_same = True
+            bit = route_network_bianaries[0][x]
+            for bi_str in route_network_bianaries:
+                if bi_str[x] != bit:
+                    all_the_same = False
+
+            if all_the_same:
+                network_result += bit
+                if end_of_netmask == False: 
+                    netmask_result += '1'
+                else:
+                    netmask_result += '0'
+            else:
+                end_of_netmask = True
+                network_result += '0'
+                netmask_result += '0'
+
+        # Convert results back into dotted ip
+        network_binary_groups = [network_result[i:i+8] for i in range(0, len(network_result), 8)]
+        netmask_binary_groups = [netmask_result[i:i+8] for i in range(0, len(netmask_result), 8)]
+        network_decimal = [int(group, 2) for group in network_binary_groups]
+        netmask_decimal = [int(group, 2) for group in netmask_binary_groups]
+        network_string = '.'.join(map(str, network_decimal))
+        netmask_string = '.'.join(map(str, netmask_decimal))
+
+        agg_route = {
+            "origin" : routes[0]['origin'],
+            "localpref" : routes[0]['localpref'],
+            "network" : network_string,
+            "ASPath" : routes[0]['ASPath'],
+            "netmask" : netmask_string,
+            "peer" : routes[0]['peer'],
+            "selfOrigin" : routes[0]['selfOrigin']
+        }
+
+        return agg_route
+    
     def ip_in_network(self, ip, network, netmask):
         # Split the IP address, network address, and netmask into octets
         ip_octets = [int(octet) for octet in ip.split('.')]
@@ -303,6 +393,44 @@ class Router:
             msg_msg['peer'] = entry_json['src']
             self.forwarding_table.append(msg_msg)
         # Perform aggregration
+        
+        # list of lists of routes that can be aggregated
+        # i.e. [[0,1,3], [4,5]]
+        toAggregate = []
+        # already set to aggregate
+        # i.e [0,1,3,4,5]
+        aggregated = []
+        
+        # new forwarding table of aggregated
+        newForwardingTable = []
+        for i, route1 in enumerate(self.forwarding_table):
+            group = [i]
+            for j, route2 in enumerate(self.forwarding_table):
+                # dont compare to self or already compared
+                if i < j:
+                    if j not in aggregated and self.canAggregate(route1, route2):
+                        group.append(j)
+                        aggregated.append(j)
+            if len(group) > 1:
+                aggregated.append(i)
+                toAggregate.append(group)
+            
+        # add the aggregated routes to the forwarding table  
+        for group in toAggregate:
+
+            aggregatedRoute = self.aggregate_routes([self.forwarding_table[i] for i in group])
+            newForwardingTable.append(aggregatedRoute)
+        
+        #add the old routes that did not need to be aggregated to the table too 
+        
+        for index, route in enumerate(self.forwarding_table):
+            if index not in aggregated:
+                #this is a route that was not aggregated with any so we just append it 
+                newForwardingTable.append(route)
+                
+        #set the new forwarding table as out forwarding table to use
+        self.forwarding_table = newForwardingTable
+        
         return
 
 if __name__ == "__main__":
