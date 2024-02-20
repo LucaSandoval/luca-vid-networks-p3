@@ -27,12 +27,27 @@ class Router:
             self.relations[neighbor] = relation
             self.send(neighbor, json.dumps({ "type": "handshake", "src": self.our_addr(neighbor), "dst": neighbor, "msg": {}  }))
 
+
     def our_addr(self, dst):
+        """tells us what our ip is based on the other ip given
+
+        Args:
+            dst (str): destination ip
+
+        Returns:
+            str: what our ip should be
+        """
         quads = list(int(qdn) for qdn in dst.split('.'))
         quads[3] = 1
         return "%d.%d.%d.%d" % (quads[0], quads[1], quads[2], quads[3])
 
     def send(self, network, message):
+        """send a message to a network
+
+        Args:
+            network (str): the network ip to send to 
+            message (str): the message to send 
+        """
         self.sockets[network].sendto(message.encode('utf-8'), ('localhost', self.ports[network]))
 
     def run(self):
@@ -50,46 +65,14 @@ class Router:
                 self.process_msg(msg, srcif)          
         return
     
-    def process_msg(self, msg, src):
-
-        # test = {
-        #     'origin' : 'EGP',
-        #     'localpref' : 100,
-        #     'network' : '192.168.3.0',
-        #     'ASPath' : [1],
-        #     'netmask' : '255.255.255.0',
-        #     'peer' : '192.168.0.2',
-        #     'selfOrigin' : True
-        # }
-
-        # test2 = {
-        #     'origin' : 'EGP',
-        #     'localpref' : 100,
-        #     'network' : '192.168.1.0',
-        #     'ASPath' : [1],
-        #     'netmask' : '255.255.255.0',
-        #     'peer' : '192.168.0.2',
-        #     'selfOrigin' : True
-        # }
-
-        # print("BIG TEST!!! = " + str(self.canAggregate(test, test2)))
-
-
-
-        msg_json = json.loads(msg)
-        msg_src = msg_json['src']
-        msg_dst = msg_json['dst']
-        msg_type = msg_json['type']
-        msg_msg = msg_json['msg']
-        
-        # main logic
-        if (msg_type == "update"):
+    #handles the update message
+    def update(self, msg, msg_src, msg_type, msg_msg):
+           
+      
             # save a copy of this route announcement for later
             self.route_announcments.append(msg)
             # update our forwarding table
             self.rebuild_forwarding_table()
-            print("Route AFTER UPDATE = " + str(self.route_announcments))
-            print("FT AFTER UPDATE = " + str(self.forwarding_table))
             # send copies to neighbors (if applicable)
             rec_neighbor_type = self.relations[msg_src]
             for sock_ip in self.sockets:
@@ -112,8 +95,9 @@ class Router:
                         # Send it over our neighbor
                         self.send(sock_ip, json.dumps(new_msg))
                         
-        elif(msg_type == "data"):            
-            # Determine which route to forward it to (if any)
+    # handles the data message
+    def data(self, msg, msg_src, msg_dst, src):
+        # Determine which route to forward it to (if any)
             possible_routes = []
             for route in self.forwarding_table:
                 route_network = route['network']
@@ -135,11 +119,10 @@ class Router:
             else:
                 # Otherwise, there is no route
                 self.send_no_route(msg_src, src)
-        elif(msg_type == "dump"):
-            # Sends table message back the way it came.
-            self.send(msg_src, self.send_table(msg_src))
-        if msg_type == "withdraw":
-            # for each ip address in forwarding table 
+                
+        #handles the withdraw message        
+    def withdraw(self, msg_src, msg_msg, msg_type):
+        # for each ip address in forwarding table 
             for entry in self.route_announcments:
                 entry_json = json.loads(entry)
                 for network in msg_msg:
@@ -149,8 +132,6 @@ class Router:
             # new forwarding table with the updated entries
             self.rebuild_forwarding_table()
 
-            print("Route AFTER WITHDRAW = " + str(self.route_announcments))
-            print("FT AFTER WITHDRAW = " + str(self.forwarding_table))
             
             # send copies of the route revocation to neighbors
             
@@ -170,8 +151,37 @@ class Router:
                         }
                         # Send it over our neighbor
                         self.send(sock_ip, json.dumps(new_msg))            
-        return
+
+    def process_msg(self, msg: str, src: str):
+        """process a message by checking its type and then acting accordingly
+
+        Args:
+            msg (str): the message to send
+            src (str): the source ip of the message 
+        """
+
+
+        # extract the different components of the message
+        msg_json = json.loads(msg)
+        msg_src = msg_json['src']
+        msg_dst = msg_json['dst']
+        msg_type = msg_json['type']
+        msg_msg = msg_json['msg']
+        
+        # main logic
+        if (msg_type == "update"):
+            self.update(msg, msg_src, msg_type, msg_msg)
+                        
+        elif(msg_type == "data"):            
+            self.data(msg, msg_src, msg_dst, src)
+            
+        elif(msg_type == "dump"):
+            # Sends table message back the way it came.
+            self.send(msg_src, self.send_table(msg_src))
+        if msg_type == "withdraw":
+            self.withdraw(msg_src, msg_msg, msg_type)
     
+    # picks the best route based on the possible routes in the table 
     def pick_best_route(self, route_possibilites):
         # If there's only one option, pick it.
         if (len(route_possibilites) == 1):
@@ -243,6 +253,7 @@ class Router:
         lowest_ip = self.find_lowest_ip(ranking)
         return route_dict[lowest_ip][0]
     
+    #sorts the routes by their fields 
     def sort_routes_by_field(self, field, route_possibilites):
         # Place all routes into a table where the key is the 
         # given field.
@@ -261,6 +272,7 @@ class Router:
         ranking = sorted(ranking)
         return route_dict, ranking
 
+    # gets the netmask length
     def netmaskLength(self, netmask):
         netmask_octets = [int(octet) for octet in netmask.split('.')]
         netmask_binary = ''.join(format(octet, '08b') for octet in netmask_octets)
@@ -268,6 +280,7 @@ class Router:
         
         return netmask_len
     
+    # finds the lowest ip
     def find_lowest_ip(self, ip_addresses):
         # Function to compare two IP addresses and return the lowest one
         def compare_ip_addresses(ip1, ip2):
@@ -291,8 +304,8 @@ class Router:
         
         return lowest_ip
     
+    #checks if its possible to aggregate two routes
     def canAggregate(self, route1, route2):
-        #print(f"Can aggregate {route1}, {route2}?")
         #adjacent numerically,
         net1 = route1["network"]
         net1_octets = [int(octet) for octet in net1.split('.')]
@@ -320,7 +333,6 @@ class Router:
         
         
         if netmask1_binary != netmask2_binary:
-            #print("netmask not equal")
             return False
         
         net1_binary = net1_binary[:netmask1_len]
@@ -340,10 +352,7 @@ class Router:
             if char != net2_binary[i]:
                 adjecent = False
                 break
-        #print(net1_binary)
-        #print(net2_binary)
-        #print(adjecent)
-        #print(f"adjecent: {adjecent}")
+        
         if adjecent: 
         # forward to the same next-hop router 
             if route1["ASPath"][0] == route2["ASPath"][0]:
@@ -353,7 +362,7 @@ class Router:
                             and route1["peer"] == route2["peer"]
                             
         return False
-    
+    # aggregates two routes
     def aggregate_routes(self, routes):
         if(len(routes) == 1):
             return routes[0]
@@ -407,7 +416,7 @@ class Router:
         }
 
         return agg_route
-    
+    # checks if the given ip is in the network based on the netmask 
     def ip_in_network(self, ip, network, netmask):
         # Split the IP address, network address, and netmask into octets
         ip_octets = [int(octet) for octet in ip.split('.')]
@@ -422,6 +431,7 @@ class Router:
         # Compare if the result matches the network address
         return (network_binary & netmask_binary) == (ip_binary & netmask_binary)
     
+    # sends a table to the destination ip 
     def send_table(self, dst):
         response = {
             "src":  self.our_addr(dst),        # Example: 72.65.0.1, i.e., your router
@@ -430,7 +440,7 @@ class Router:
             "msg": self.forwarding_table
             }
         return json.dumps(response)
-    
+    # sends the no route message 
     def send_no_route(self, dst_ip, router):
         no_route_msg = {
                 "src" : self.our_addr(router),
@@ -440,7 +450,7 @@ class Router:
             }
         self.send(router, json.dumps(no_route_msg))
         return
-
+    # rebuilds the table 
     def rebuild_forwarding_table(self):
         # Clear the old forwarding table
         self.forwarding_table = []
